@@ -11,14 +11,47 @@ function displayName(r){let name=String(r.name||'').trim();let prefix='';if(r.mo
 function score(r,q){if(!q)return 1;let n=norm(displayName(r)),raw=norm(r.name),m=norm(r.mod+' '+r.section),words=q.split(' ');if(n===q)return 120;if(n.startsWith(q))return 100;if(raw===q)return 90;if(n.includes(q))return 80;if(raw.startsWith(q))return 70;if(words.every(x=>n.includes(x)))return 60;if(words.every(x=>(n+' '+m).includes(x)))return 30;return 0}
 function list(){let q=norm($('search').value);return DB.records.map(r=>({...r,_score:score(r,q)})).filter(r=>(filter==='Alle'||r.mod===filter)&&r._score>0).sort((a,b)=>b._score-a._score||displayName(a).localeCompare(displayName(b),'de'))}
 function renderTabs(){let labels={'Durchleuchtung':'DL','Intervention':'INT','Mamma-Intervention':'Mamma-INT'};$('tabs').innerHTML=mods.map(m=>'<button class="tab '+(m===filter?'active':'')+'" data-tab="'+esc(m)+'">'+esc(labels[m]||m)+'</button>').join('');$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{filter=b.dataset.tab;selected=null;render()})}function checkDevice(v){let t=String(v).toLowerCase().trim();return t==='x'?'allowed': t==='a'||t==='m'||t==='(x)'||t.includes('nur')?'conditional':'other'}function findRemote(r){if(r.mod!=='MR')return null;let needle=norm(r.name);let found=DB.remote.find(x=>norm(x.name).replace(/^mr /,'')===needle);return found||null}function isIP(k){return /^(?:IP)(?:\s|·|$)/i.test(k)}
-function extractPool(r){let original=String(r.pool||'').trim();let match=String(r.notes||'').match(/(?:^|\n)\s*POOL\s*:\s*([^\n]+)/i);let specified=match?match[1].trim():'';let generic=/individuell|siehe text/i.test(original);let cleaned=original.replace(/^(?:POOL\s*:?\s*)+/i,'').trim();if(generic&&specified)return {main:specified,additional:'Pool aus den Planungshinweisen übernommen',original:original};if(!cleaned)return {main:'Nicht angegeben',additional:'',original:original};let result=cleaned;
-// Bei expliziter Standort-Zuordnung KIP zuerst nennen; den vollständigen Originaltext erhalten.
-let locationMatch=cleaned.match(/Klinik\s+im\s+Park\s*:\s*([^\n/]+?)(?=\s*\/|$)/i);
-if(locationMatch){let val=locationMatch[1].trim();result=val;return {main:result,additional:'Klinik im Park · gemäss Untersuchungsliste',original:original}}
-// Bei Paaren im Schema HI / KIP die KIP-Variante sichtbar voranstellen, soweit ausdrücklich nachvollziehbar.
-let two=cleaned.match(/^(?:NEUROHI|NEURHOHI|NEUROHI\s*\/\s*)\s*\/\s*(ORLNEUROZH)$/i);
-if(two)return {main:two[1],additional:'Klinik im Park · weitere Poolangabe siehe Original',original:original};
-if(/\bNEUROHI\s*\/\s*ORLNEUROZH\b/i.test(cleaned))return {main:'ORLNEUROZH',additional:'Klinik im Park · Zuweiserregeln im Original beachten',original:original};
-return {main:result,additional:generic?'Pool abhängig von Planungshinweisen':'',original:original}}
-function poolMarkup(r){let p=extractPool(r);return '<div class="pool-main">'+esc(p.main)+'</div>'+(p.additional?'<p class="explain">'+esc(p.additional)+'</p>':'')+(p.original&&norm(p.original)!==norm(p.main)?'<details class="originalpool"><summary>Vollständige Poolangabe / weitere Standorte</summary><div class="note">'+esc(p.original)+'</div></details>':'')}
+function extractPool(r){
+const original=String(r.pool||'').trim(), notes=String(r.notes||''), full=original+' \n'+notes;
+const cleaned=original.replace(/^(?:POOL\s*:?\s*)+/i,'').trim();
+const special=/nur in (?:der )?HI|nur (?:in )?HI|HI od\. SF|HI oder SF/i.test(full)&&!/\bIP\b|Klinik im Park/i.test(full);
+const hasKIP=Object.keys(r.devices||{}).some(isIP);
+const source=notes.match(/(?:^|\n)\s*POOL\s*:\s*([^\n]+)/i);
+const notePool=source?source[1].trim():'';
+const kip=cleaned.match(/Klinik\s+im\s+Park\s*:\s*([A-Z0-9]+)/i)||cleaned.match(/\bIP\s*=\s*([A-Z0-9]+)/i);
+const conditionalNeuro=/neurologisch(?:er|en|e)?\s+Zuweiser|bei\s+Neuro|nicht.neuro/i.test(cleaned);
+let main='',additional='';
+if(kip){main=kip[1];additional='Klinik im Park · standortspezifische Angabe'}
+else if(special){main='Nicht für KIP ausgewiesen';additional='Nur HI / weitere genannte Standorte · ursprünglichen Planungshinweis beachten'}
+else if(notePool&&!/individuell|siehe text/i.test(notePool)){main=notePool;additional='Pool aus Planungshinweisen'}
+else if(conditionalNeuro){
+main='ORLNEUROZH / MSKZH';
+additional='Neurologischer Zuweiser: ORLNEUROZH · anderer Zuweiser: MSKZH. GRMSKZH nicht selbst auswählen.'
+}
+else if(/\b(?:NEUROHI|NEURHOHI)\s*\/\s*ORLNEUROZH\b/i.test(cleaned)){main='ORLNEUROZH';additional='Klinik im Park · HI: NEUROHI'}
+else if(/\bKARDIOZH\s*\/{1,2}\s*HERZIP\b/i.test(cleaned)){main='HERZIP';additional='Klinik im Park · ursprüngliche HI-Angabe siehe unten'}
+else if(/\b(?:MSKZH\s*\/\s*GRMSKZH|GRMSKZH\s*\/\s*MSKZH)\b/i.test(cleaned)){main='MSKZH';additional='GRMSKZH ist ein Spezialärztepool und darf nicht selbst angewählt werden'}
+else if(cleaned&& !/individuell|siehe text/i.test(cleaned)){
+main=cleaned;
+if(/\bGRMSKZH\b/.test(main))additional='GRMSKZH nicht selbst auswählen';
+}
+if(!main||main==='KARDIOHI'){
+ const section=String(r.section||'').toLowerCase(),n=String(r.name||'').toLowerCase();
+ if(r.mod==='RX / US' && /^(?:us|ultraschall)\b/i.test(n)){main='USIP';additional='Klinik im Park · Ultraschall allgemein'}
+ else if(r.mod==='RX / US' && (/^(?:rx|telos)\b/i.test(n)||/\bdexa\b/i.test(n))){main='RXPOOLZH';additional='Klinik im Park · Röntgen'}
+ else if(r.mod==='CT'&&section==='herz'&&hasKIP){main='HERZIP';additional='Klinik im Park · Herz; HI: KARDIOHI'}
+ else if(!main && hasKIP && ['abdomen','becken'].includes(section)){main='ABDUROZH';additional='Klinik im Park · Bereich Abdomen / Becken; Details prüfen'}
+ else if(!main && hasKIP && section==='thorax'){main='THORAXZH';additional='Klinik im Park · Bereich Thorax; Details prüfen'}
+ else if(!main && hasKIP && section==='herz'){main='HERZIP';additional='Klinik im Park · Herz; Details prüfen'}
+ else if(!main && hasKIP && section==='schädel'){main='ORLNEUROZH';additional='Klinik im Park · Schädel; Zuweiserhinweise prüfen'}
+}
+if(!main)main='Nicht eindeutig angegeben';
+if(main==='MSKZH/ GRMSKZH')main='MSKZH';
+if(/\bGRMSKZH\b/.test(main)&&main!=='GRMSKZH'&&!additional.includes('nicht selbst'))additional+=' · GRMSKZH nicht selbst auswählen';
+return {main,additional:additional.trim().replace(/^·\s*/,''),original};
+}
+function poolMarkup(r){
+let p=extractPool(r);
+return '<div class="pool-main">'+esc(p.main)+'</div>'+(p.additional?'<p class="explain">'+esc(p.additional)+'</p>':'')+(p.original&&norm(p.original)!==norm(p.main)?'<details class="originalpool"><summary>Vollständige Poolangabe / weitere Standorte</summary><div class="note">'+esc(p.original)+'</div></details>':'')+'<details class="originalpool"><summary>Pool-Referenz Klinik im Park / HI</summary><div class="note">KIP: RX → RXPOOLZH · US allgemein → USIP · Abdomen → ABDUROZH · Herz → HERZIP · Thorax → THORAXZH · Gelenke/Bewegungsapparat → MSKZH · Spezialärzte Bewegungsapparat → GRMSKZH (nicht selbst anwählen) · Brust/US/Interventionen → MAMMAZH · Schädel → ORLNEUROZH · Neurologischer Zuweiser → ORLNEUROZH · Onkologischer Zuweiser → ONKOZH\nHI: KARDIOHI (Kardio) · NEUROHI (Neuro) · USHI (Ultraschall). Jeweilige Untersuchung, Standortfreigabe und Zuweiserregeln beachten.</div></details>';
+}
 function renderDetail(r){if(!r){$('detail').innerHTML='<div class="empty">Untersuchung eingeben oder aus der Liste auswählen.</div>';return}let ds=Object.entries(r.devices).sort((a,b)=>Number(isIP(b[0]))-Number(isIP(a[0]))),allowed=ds.filter(([k,v])=>checkDevice(v)==='allowed'),conditional=ds.filter(([k,v])=>checkDevice(v)!=='allowed');let deviceMarkup=ds.length?'<div class="device-list">'+allowed.map(([k,v])=>'<div class="device">✓ '+esc(k)+'</div>').join('')+conditional.map(([k,v])=>'<div class="device conditional">⚠ '+esc(k)+' · '+esc(v)+'</div>').join('')+'</div>':'<div class="warn">Für diese Untersuchung enthält die Tabelle keine vollständige Geräte-/Standortfreigabe. Angaben in den Hinweisen prüfen.</div>';let remote=findRemote(r);let remMarkup=remote?'<div class="block"><h2>Remote-Scanning</h2><div class="device-list"><div class="device '+(remote.yes?'':'no')+'">'+(remote.yes?'✓ Laut Remote-Liste: Ja':remote.no?'✕ Laut Remote-Liste: Nein':'Nicht eindeutig')+'</div>'+(remote.conditional?'<div class="device conditional">⚠ Nur wenn parallel Knie / WS nativ</div>':'')+'</div>'+(remote.notes?'<p class="explain">'+esc(remote.notes)+'</p>':'')+'</div>':'';let global=DB.meta[r.mod]||[];$('detail').innerHTML='<div class="eyebrow">'+esc(r.mod)+'</div><h1>'+esc(displayName(r))+'</h1><div class="sec">'+(r.section?'Bereich: '+esc(r.section)+' · ':'')+'Original: '+esc(r.origin)+' · Zeile '+r.excelrow+'</div><div class="metrics"><div class="metric"><div class="lab">Untersuchungsdauer</div><div class="value">'+esc(r.duration||'Nicht angegeben')+'</div></div><div class="metric"><div class="lab">Vorbereitungszeit</div><div class="value">'+esc(r.prep||'Nicht angegeben')+'</div></div></div><div class="block"><h2>Pool / Zuweiser · Klinik im Park zuerst</h2>'+poolMarkup(r)+'</div><div class="block"><h2>Geräte und Standorte · Klinik im Park zuerst</h2>'+deviceMarkup+'<p class="explain">Grün = explizit mit x markiert. Gelb = bedingt / besonderer Vermerk. Nicht aufgeführte Geräte sind in dieser Zeile nicht freigegeben oder nicht dokumentiert – nicht eigenständig als erlaubt annehmen.</p></div>'+(r.notes?'<div class="block"><h2>Wichtige Planungshinweise</h2><div class="note">'+esc(r.notes)+'</div></div>':'')+(r.sectionNotes?'<div class="block"><h2>Allgemeiner Hinweis zum Bereich</h2><div class="note">'+esc(r.sectionNotes)+'</div></div>':'')+remMarkup+(global.length?'<div class="block"><h2>Allgemeine Vorgaben · '+esc(r.mod)+'</h2><div class="note">'+global.map(x=>'• '+esc(x)).join('\n')+'</div></div>':'')+'<div class="footer">Quelle: hochgeladene Untersuchungsliste. Bei Widersprüchen oder Spezialfällen gilt die aktuelle interne Weisung und die Rücksprache mit der zuständigen Fachverantwortung. Keine Patientendaten eingeben.</div>'}function render(){renderTabs();let arr=list();$('count').textContent=arr.length+' Untersuchungen gefunden · '+DB.records.length+' insgesamt';if(!arr.some(r=>r.id===selected))selected=arr[0]?.id??null;$('results').innerHTML=arr.length?arr.slice(0,limit).map(r=>'<button class="item '+(r.id===selected?'active':'')+'" data-id="'+r.id+'"><strong>'+esc(displayName(r))+'</strong><small>'+esc(r.mod)+(r.duration?' · '+esc(r.duration):'')+'</small></button>').join('')+(arr.length>limit?'<button class="item" id="more">Weitere anzeigen …</button>':''):'<div class="empty">Keine passenden Untersuchungen gefunden.</div>';$('results').querySelectorAll('[data-id]').forEach(b=>b.onclick=()=>{selected=Number(b.dataset.id);render()});if($('more'))$('more').onclick=()=>{limit+=100;render()};renderDetail(arr.find(r=>r.id===selected))}$('search').addEventListener('input',()=>{selected=null;limit=90;render()});$('clear').onclick=()=>{$('search').value='';selected=null;render();$('search').focus()};$('minibtn').onclick=()=>{document.body.classList.toggle('mini');$('minibtn').textContent=document.body.classList.contains('mini')?'Normal':'Kompakt'};document.addEventListener('keydown',e=>{if(e.key==='/'&&document.activeElement!==$('search')){e.preventDefault();$('search').focus()}if(e.key==='Escape'&&document.activeElement===$('search'))$('search').blur()});render();</script></body></html>
